@@ -1,0 +1,395 @@
+---
+title: "Predicting Customer Satisfaction for an Airline"
+subtitle: "Using Machine Learning Models to Predict Satisfaction Level for an Airline"
+author: "Melissa Tam"
+date: 'PSTAT 131: Spring 2024'
+output:
+  html_document:
+    code_folding : hide 
+    theme: united
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: true
+      smooth_scroll: true
+  pdf_document:
+    toc: yes
+---
+
+```{r, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(visdat)
+library(corrplot)
+library(janitor)
+library(dplyr)
+library(yardstick)
+```
+
+# Introduction
+Understanding and predicting customer satisfaction levels are crucial for any company, particularly in the airline industry. High satisfaction levels often lead to repeat business, positive word-of-mouth, and a competitive edge in the market. Conversely, dissatisfaction can result in negative reviews, loss of customers, and decreased revenue. By accurately predicting passenger satisfaction, airlines can tailor their services to meet customer needs better, improve overall experience, and implement strategic changes that foster customer loyalty and enhance operational efficiency.\
+
+In the following report, I will work with a variety of indicators to build multiple machine learning models that predict airline passenger satisfaction. Key indicators will focus on customer characteristics and various amenities and services provided by the airline. The model with the highest area under the ROC curve (ROC AUC) will be selected as the final model to predict the satisfaction level of airline customers. 
+
+The roadmap for this project is structured into several key phases. First, we will focus on cleaning the dataset, handling missing values, and encoding categorical variables to prepare the data for analysis. Following this, we perform exploratory data analysis (EDA) to understand the underlying patterns and relationships within the data. The next phase involves splitting the data into training and testing sets to facilitate model development and evaluation. We then build and train our models, tune with cross-validation if needed and evaluate the best performing model. Whichever model performs best will be fit to our testing data.
+
+# Exploratory Data Analysis
+Before we go straight into visualizing our data with plots and tables, we need to make sure our data is tidy. Not all data we load in will be clean and ready for analyzing. In this section we will look for missing values, convert categorical variables into factors and remove columns we don't need.
+
+## Loading and Tidying the Data
+The data for this project is taken from the Kaggle data set, ["Airline Passenger Satisfaction."](https://www.kaggle.com/datasets/teejmahal20/airline-passenger-satisfaction/data) It was scraped from the [Passenger Satisfaction Database](https://www.kaggle.com/datasets/johndddddd/customer-satisfaction/data) and cleaned up by TJ Klein. The data originated from a survey conducted to assess passenger satisfaction with US airlines.\
+
+Klein, T. (2020). Airline Passenger Satisfaction, Version 1. Retrieved April 12, 2024 from https://www.kaggle.com/datasets/teejmahal20/airline-passenger-satisfaction/data. \
+
+I will first load the data in and clean up the column names.
+```{r, class.source = "fold-show"}
+# Load in data
+airline <- read.csv("data/airline.csv")
+
+# Clean predictor names
+airline <- airline %>% clean_names()
+```
+
+Let's take a look at how much data we have and the datatype for each variable.
+```{r, class.source = "fold-show"}
+# check how many rows and columns
+airline %>% dim()
+
+# check internal structure
+airline %>% str()
+```
+In this data set, there are 103,904 rows and 25 columns. In other words, we have 103,904 responses from customers and 25 variables. The variable we are trying to predict is `satisfaction`, which leaves us with 24 predictor variables. Let's try to narrow down the number of predictors. \
+
+The two variables I will exclude are `#` and `id` because these variables help to identify the individual who has taken the survey. These variables do not contribute to customer satisfaction. Also, notice how `arrival_delay_in_minutes` is of num datatype. Let's change that to an integer.
+```{r, class.source = "fold-show"}
+# remove column x and id
+airline <- airline %>% select(-x, -id)
+
+# change datatype of variable
+airline$arrival_delay_in_minutes = as.integer(airline$arrival_delay_in_minutes)
+```
+
+Finally, let's change our categorical variables into factors. 
+```{r, class.source = "fold-show"}
+airline$gender <- as.factor(airline$gender)
+airline$customer_type <- as.factor(airline$customer_type)
+airline$type_of_travel <- as.factor(airline$type_of_travel)
+airline$class <- as.factor(airline$class)
+airline$satisfaction <- as.factor(airline$satisfaction)
+```
+
+## Handling Missing Values
+Now that we have dropped some columns and changed the data types, let's see if there are missing values in our data set.
+```{r}
+# check for percentage of missing values
+vis_miss(airline, warn_large_data = FALSE)
+
+# summary statistic
+summary(airline$arrival_delay_in_minutes)
+```
+The data set has less than 0.1% missing data in the `arrival_delay_in_minutes` column. This might seem like a very small percentage, but in absolute terms, it translates to 310 missing values. I will replace the NA's with its median=0 to normalize it.
+
+```{r, class.source = "fold-show"}
+# replace NA with 0
+airline$arrival_delay_in_minutes[is.na(airline$arrival_delay_in_minutes)] <-0
+```
+
+Our data now includes the following 23 variables: \
+
+`gender` Gender of the passengers (Female, Male) \
+`customer_type` The customer type (Loyal customer, disloyal customer)\
+`age` The actual age of the passengers\
+`type_of_travel` Purpose of the flight of the passengers (Personal Travel, Business Travel)\
+`class` Travel class in the plane of the passengers (Business, Eco, Eco Plus)\
+`flight_distance` The flight distance of this journey\
+`inflight_wifi_service` Satisfaction level of the inflight wifi service (0:Not Applicable;1-5)\
+`departure_arrival_time_convenience` Satisfaction level of Departure/Arrival time convenient\
+`ease_of_online_booking` Satisfaction level of online booking\
+`gate_location` Satisfaction level of Gate location\
+`food_and_drink` Satisfaction level of Food and drink\
+`online_boarding `Satisfaction level of online boarding\
+`seat_comfort` Satisfaction level of Seat comfort\
+`inflight_entertainment` Satisfaction level of inflight entertainment\
+`on_board_service` Satisfaction level of On-board service\
+`leg_room_service` Satisfaction level of Leg room service\
+`baggage_handling` Satisfaction level of baggage handling\
+`checkin_service` Satisfaction level of Check-in service\
+`inflight_service` Satisfaction level of inflight service\
+`cleanliness` Satisfaction level of Cleanliness\
+`departure_delay_in_minutes` Minutes delayed when departure\
+`arrival_delay_in_minutes` Minutes delayed when Arrival\
+`satisfaction` Airline satisfaction level(Satisfaction, neutral or dissatisfaction)\
+
+## Visual EDA
+Now let's start visualizing the data to find relationships between variables.
+
+### Distribution of Satisfaction
+First, let's explore the distribution of the response variable `satisfaction` to make sure that our data is balanced.
+```{r}
+# pie chart
+airline %>%
+  count(satisfaction) %>%
+  mutate(percent = prop.table(n) * 100) %>%
+  ggplot(aes(x = "", y = n, fill = satisfaction)) +
+  geom_bar(width = 1, stat = "identity", color = "white") +
+  geom_text(aes(label = paste0(round(percent), "%")), position = position_stack(vjust = 0.5)) + 
+  coord_polar(theta = "y") +
+  labs(title = "Distribution of Satisfaction Levels") +
+  theme_void() 
+```
+\
+The `satisfaction` variable contains two possible values: 'neutral or dissatisfied' and 'satisfied.' From the pie chart, we can see that the data is quite balanced and thus, does not need any adjustments or resampling.\
+
+### Correlation Plot
+Next, I will use a correlation plot to explore the relationships between the numeric variables. 
+```{r}
+# correlation matrix (numerical)
+airline %>% 
+  select_if(is.numeric) %>% 
+  cor(use = "complete.obs") %>% 
+  corrplot(type = 'lower', diag = FALSE, method = 'shade', tl.cex = 0.7)
+
+```
+\
+The correlation matrix does not display any red colors, meaning that the variables are positively or neutrally correlated with each other. Notably, `departure_delay_in_minutes` is directly correlated with `arrival_delay_in_minutes`. This makes sense because if a flight departs late, it will also arrive late to its destination. \
+
+Additionally, the different amenities and services provided by the airline have a positive correlation with each other. For example, `cleanliness` is highly positively  with `food_and_drink`, `seat_comfort` and `inflight_entertainment`. `ease_of_online_booking` is correlated with `inflight_wifi_service`. `food_and_drink` is positively correlated with `seat_comfort` and `inflight_entertainment`. Understanding these groupings and correlations helps us identify the key areas that influence passenger satisfaction and provides insights for improving the overall customer experience.\
+
+
+### Assessment of Amenities and Services
+```{r}
+airline %>%
+  pivot_longer(
+    cols = c(
+      inflight_wifi_service, departure_arrival_time_convenient, ease_of_online_booking,
+      gate_location, food_and_drink, online_boarding, seat_comfort, inflight_entertainment, 
+      on_board_service, leg_room_service, baggage_handling, checkin_service, inflight_service,
+      cleanliness
+    ),
+    names_to = "Amenity",
+    values_to = "Satisfaction"
+  ) %>%
+  ggplot(aes(x = Amenity, y = Satisfaction)) +
+  geom_boxplot(fill = "#00BFC4", color = "blue") +
+  labs(
+    title = "Comparison of Satisfaction Levels for Amenities and Services",
+    x = "Amenity and Services",
+    y = "Satisfaction Level"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+\
+The boxplot illustrates the distribution of passenger satisfaction levels for various airline services and amenities. Most services show a median satisfaction level around 3, indicating moderate satisfaction. Notable exceptions include `inflight_service`, `inflight_entertainment`, `leg_room_service` and `on_board_service`, all having higher medians around 4 . `baggage_handling` also stands out with relatively high satisfaction, evidenced by its median around 4 and a higher interquartile range. Outliers in check-in service indicate a few very low satisfaction ratings, while most other categories have relatively fewer outliers, indicating more consistent satisfaction levels among passengers.
+
+### Traveler Characteristics
+```{r}
+# percent stacked bar chart (gender)
+airline %>%
+  ggplot(aes(x=satisfaction, fill=gender)) + 
+  geom_bar(position="fill") +
+  ggtitle("Satisfaction Proportion by Gender")
+```
+\
+It's evident that both male and female customers exhibit similar proportions of neutral/dissatisfied and satisfied satisfaction levels. This suggests that gender might not play a significant role in influencing customer satisfaction levels within this dataset.
+
+```{r}
+# percent stacked bar chart (type of travel)
+airline %>%
+  ggplot(aes(x=satisfaction, fill=type_of_travel)) + 
+  geom_bar(position="fill") +
+  ggtitle("Satisfaction Proportion by Travel Type")
+```
+\
+Business traveling customers and personal traveling customers exhibit similar proportions of neutral/dissatisfied. Meanwhile, the disparity in satisfaction levels between business and personal travelers is striking, with over 90% of satisfied customers falling into the former category.
+
+```{r}
+# percent stacked bar chart (class)
+airline %>%
+  ggplot(aes(x=satisfaction, fill=class)) + 
+  geom_bar(position="fill") +
+  ggtitle("Satisfaction Proportion by Travel Class")
+```
+\
+In the satisfied category, a notable 75% of passengers are in business class, indicating a higher level of satisfaction among these travelers. Conversely, in the neutral/dissatisfied category, 50% of passengers are in economy class. This trend clearly demonstrates that booking a higher class correlates with a better travel experience.
+
+# Setting up the Models
+Now that we know which variables will affect the airline satisfaction level, we can begin to build our models. First we will split our data into training and testing sets, create our recipe and implement a k-fold cross validation within our models.
+
+## Train/Test Split
+Before we set up our models, we need to split the data into training and testing sets. The training set is used to train the model, while the testing set is used to evaluate the model performance. I have decided split 80% of the data to the training set and the remaining 20% to the testing set. This split ensures that our model is being trained on most of the data we have, whilst also having a portion set aside for testing. When the data is split, it will be stratified on the `satisfaction` variable so that the `satisfaction` variable is equally distributed in both the training and testing data. We will also set a seed so that we can reproduce our results.
+
+```{r, class.source = "fold-show"}
+# set seed
+set.seed(14789)
+
+# split our data into training and testing
+airline_split <- initial_split(airline, prop = 0.80, strata = satisfaction)
+airline_train <- training(airline_split)
+airline_test <- testing(airline_split)
+
+nrow(airline_train)/nrow(airline)
+nrow(airline_test)/nrow(airline)
+```
+To confirm that the data was split correctly, we divide the number of observations in the training/testing sets by the number of observations in the original set. The training data has approximately 80% of the data and the testing set has 20%. This means our data was split correctly.
+
+## Recipe Building
+Next, we will create a recipe for our models to use. We can use the same recipe for each of our models because we will be using the same predictors and response variable. We will be using 21 out of the 22 predictors we have. `gender` will not be included in our recipe because earlier we found that there is no difference in satisfaction level between males and females. Next, we will dummy code all the categorical predictors. Finally, we must make sure to center and scale all the predictors.
+
+```{r, class.source = "fold-show"}
+airline_recipe <- recipe(satisfaction ~ customer_type + age + type_of_travel + class + flight_distance + inflight_wifi_service + departure_arrival_time_convenient + ease_of_online_booking + gate_location + food_and_drink + online_boarding + seat_comfort + inflight_entertainment + on_board_service + leg_room_service + baggage_handling + checkin_service + inflight_service + cleanliness + departure_delay_in_minutes + arrival_delay_in_minutes, data = airline) %>%
+  step_dummy(all_nominal_predictors()) %>%  # dummy-code all categorical predictors 
+  step_center(all_predictors()) %>%  # standardizing predictors
+  step_scale(all_predictors())
+```
+
+## k-Fold Cross Validation
+As our final step, we will implement k-fold cross-validation on the training data set. k-fold cross-validation is a resampling method used in machine learning to evaluate the performance of a model. It involves splitting the data set into k folds. One of the folds is used as a validation set while the remaining folds is used for training the model. The process is repeated k times, each time using a different fold as the validation set. Then, the results from the k iterations are averaged to produce an estimate of the model’s performance.\
+
+We will use k=10 and stratify on our response variable `satisfaction`.
+```{r, class.source = "fold-show"}
+airline_fold <- vfold_cv(airline_train, v = 10, strata = satisfaction)
+```
+
+# Model Building
+We can finally start building our models. The process for building and fitting the models is very similar across all the models. The general steps are:\
+
+1. Specify the model and model parameters, the engine to use and the model type (in this case classification)\
+
+2. Set up a workflow and add the model and recipe to the workflow\
+
+3. If there are models that can be tuned, set up a tune grid by specifying the range of values and number of levels for each parameter\
+
+4. Tune the model with the workflow, along with the k-folds and tuning grid\
+
+5. Select the most accurate model from the tuning grid, and then finalize the workflow using those selected tuning parameters.\
+
+6. Fit that model with our workflow to the training data set\
+
+7. Save the results to a RDA file so we don't have to rerun the code\
+
+I will use roc_auc to evaluate the performance of the models. The ROC curve is a graphical plot that illustrates the diagnostic ability of a binary classifier as its discrimination threshold is varied. The AUC (area under the curve) tells how much the model is capable of distinguishing between the classes. A higher roc_auc is better. The range of roc_auc is 0 to 1, with 1 indicating perfect classification.
+
+# Model Results
+I fit four different models: Logistic Regression, Linear Discriminant Analysis, Quadratic Discriminant Analysis and Random Forest. The first three models did not take long to run, but the Random Forest model required more time and computing power. To save time, each model was run in a separate R file and then saved in a RDA file. I will attach these files in a [GitHub](https://github.com/melissatam47/Airline-Passenger-Satisfaction) repository if you want to refer to it. Here, I will load in the RDA files so we can analyze the performance of each model.
+
+```{r}
+load("RDA/airline_Linear_Discriminant_Analysis.rda")
+load("RDA/airline_Logistic_Regression.rda")
+load("RDA/airline_Quadratic_Discriminant.rda")
+load("RDA/airline_Random_Forest.rda")
+```
+
+# Model Visualization
+The autoplot() function is a useful tool that can help us visualize the results of the models we have tuned.
+
+## Random Forest Plot
+In our Random Forest model, we tuned 3 parameters:\
+`mtry`: number of predictors that will be randomly sampled at each split during the creation of the model \
+`trees`: number of trees contained in each forest\
+`min_n`: minimum number of observations needed in a leaf node to create another split\
+
+As the number of predictors increased, the accuracy also increased. Similarly, as the number of trees increased, the ROC AUC also increased. The optimal minimal node size seems to be 50. The bottom middle plot is the most effective model, with 10 randomly selected predictors, minimal node size of 50 and 10 trees.
+
+```{r}
+autoplot(airline_rf_tune)
+```
+
+# Model Accuracy
+I will create a tibble to display the final roc_auc value for each fitted model. This will help determine the best model to be used to fit the testing data.
+```{r}
+airline_lda_auc <- augment(airline_lda_fit, new_data = airline_train) %>% 
+  clean_names() %>%
+  roc_auc(satisfaction, pred_neutral_or_dissatisfied) %>%
+  select(.estimate)
+
+airline_log_auc <- augment(airline_log_fit, new_data = airline_train) %>%
+  clean_names() %>%
+  roc_auc(satisfaction, pred_neutral_or_dissatisfied) %>%
+  select(.estimate)
+
+airline_qda_auc <- augment(airline_qda_fit, new_data = airline_train) %>%
+  clean_names() %>%
+  roc_auc(satisfaction, pred_neutral_or_dissatisfied) %>%
+  select(.estimate)
+
+airline_rf_auc <- augment(airline_rf_fit_model, new_data = airline_train) %>%
+  clean_names() %>%
+  roc_auc(satisfaction, pred_neutral_or_dissatisfied) %>%
+  select(.estimate)
+
+airline_roc_aucs <- c(airline_lda_auc$.estimate,
+                           airline_log_auc$.estimate,
+                           airline_qda_auc$.estimate,
+                           airline_rf_auc$.estimate)
+
+airline_mod_names <- c("LDA",
+                       "Logistic Regression",
+                       "QDA",
+                       "Random Forest")
+
+```
+
+```{r, class.source = "fold-show"}
+airline_results <- tibble(Model = airline_mod_names,
+                             ROC_AUC = airline_roc_aucs)
+
+airline_results <- airline_results %>% 
+  arrange(-airline_roc_aucs)
+
+airline_results
+```
+
+Our Random Forest model has the highest roc_auc value at 0.997. The other models performed well too, having a roc_auc value of over 0.9. Moving forward, we will be using the Random Forest model to predict the testing set. 
+
+# Results from the Best Model
+Now that we have determined the Random Forest model had the best overall performance, we want to test it on data that it hasn't seen yet. Since the model was orignally trained on our training data, the ROC AUC score was very high. Within our Random Forest model, which model performed the best?
+
+```{r}
+show_best(airline_rf_tune, metric = "roc_auc") %>%
+  select(-.estimator, .config) %>%
+  slice(1)
+```
+The Random Forest Model #125 performed the best out of all the random forest models. We will finally fit our best model to our testing set to see how well it predicts the satisfaction level of passengers.
+
+## Final ROC AUC Results
+We will now create predictions on our testing data set. I will also add the columns from the testing data set to compare the results.
+```{r, class.source = "fold-show"}
+airline_predict <- predict(airline_rf_fit_model, new_data = airline_test, type = "class") 
+
+predict_actual <- airline_predict %>%
+  bind_cols(airline_test) 
+
+predict_actual
+```
+At a glance, our model predicted the `satisfaction` variable pretty well. To fully test the accuracy of the model, we will find model #125's true ROC AUC performance results on our testing set.
+```{r, class.source = "fold-show"}
+airline_roc_auc <- augment(airline_rf_fit_model, new_data = airline_test) %>%
+  clean_names()%>%
+  roc_auc(satisfaction, pred_neutral_or_dissatisfied) %>%
+  select(.estimate) 
+
+airline_roc_auc
+```
+The ROC AUC value of model #125 is 0.9938937, which is quite high.
+
+## ROC Curve
+Let's take a look at the ROC curve. We want the curve to be as high and to the left as possible, which is the case here. This means that our model performed very well, as can be reflected by the ROC AUC result from above.
+```{r}
+airline_roc_curve <- augment(airline_rf_fit_model, new_data = airline_test) %>%
+  clean_names() %>%
+  roc_curve(satisfaction, pred_neutral_or_dissatisfied) 
+
+autoplot(airline_roc_curve)
+```
+
+# Conclusion
+After fitting multiple models, the best model to predict the airline passenger satisfaction was the random forest model. This may be due to its ability to handle complex interactions between variables, its robustness against overfitting or its nonparametric algorithm. The construction of multiple decision trees and the output of the mode of classes allows the model to capture a wide variety of patterns in the data.\
+
+The model that performed the worst is the Quadratic Discriminant Analysis model. QDA requires estimating a separate covariance matrix for each class, which can be problematic with high-dimensional data. Furthermore, it can also be due to its sensitivity to the assumption of normally distributed features within each class. However, even though the QDA model performed the worst out of the four models, it still had a very high accuracy.\
+
+If my laptop had a high computing power, I would try to implement other models such as the Gradient Boosted Tree, which builds trees sequentially, with each tree attempting to correct the errors of the previous one. I would also consider the Support Vector Machine, which can be particularly effective for classification tasks with complex, non-linear decision boundaries when combined with the appropriate kernel.\
+
+Furthermore, I would also like to explore if predictors such as time will affect passenger satisfaction. Examining whether satisfaction scores tend to drop during holiday seasons due to higher passenger volumes can guide targeted service improvements during these periods.\
+
+Overall, this was a very fun project that helped build my machine learning skills. As I immersed myself into this project, I found that I enjoyed learning how to make my models more accurate.
